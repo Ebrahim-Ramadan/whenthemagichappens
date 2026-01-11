@@ -15,6 +15,7 @@ export default function Home() {
   const [svgDims, setSvgDims] = useState({ width: 0, height: 0 })
   const instanceId = useRef(Math.random().toString(36).substr(2, 9))
   const channelRef = useRef<BroadcastChannel | null>(null)
+  const [angle, setAngle] = useState(0)
 
   // Initialize BroadcastChannel for cross-tab communication
   useEffect(() => {
@@ -71,6 +72,34 @@ export default function Home() {
       window.removeEventListener("resize", handleResize)
     }
   }, [])
+
+  // Smoothly animate rotation toward the other window
+  useEffect(() => {
+    let raf = 0
+    const animate = () => {
+      let target = 0
+      if (otherWindow) {
+        const myCenterX = window.screenX + window.innerWidth / 2
+        const myCenterY = window.screenY + window.innerHeight / 2
+        const otherCenterX = otherWindow.x + otherWindow.width / 2
+        const otherCenterY = otherWindow.y + otherWindow.height / 2
+        target = (Math.atan2(otherCenterY - myCenterY, otherCenterX - myCenterX) * 180) / Math.PI
+      }
+
+      // simple easing towards target angle
+      setAngle((prev) => {
+        const d = target - prev
+        // wrap shortest
+        const delta = ((d + 180) % 360) - 180
+        return prev + delta * 0.18
+      })
+
+      raf = requestAnimationFrame(animate)
+    }
+
+    raf = requestAnimationFrame(animate)
+    return () => cancelAnimationFrame(raf)
+  }, [otherWindow])
 
   const getRibbonPaths = () => {
     if (!otherWindow) return { ribbon: "", center: "", midX: 0, midY: 0 }
@@ -160,31 +189,31 @@ export default function Home() {
           const cx = w / 2
           const cy = h / 2
 
-          // radius large enough to cover the viewport when showing half
-          const r = Math.max(w, h) * 0.9
+          // base radius (smaller than before)
+          const base = Math.max(10, Math.min(w, h))
+          let r = base * 0.9
 
-          // default angle (pointing right)
-          let angleDeg = 0
+          // decide color per-instance so some windows are blue, some green
+          const idVal = parseInt(instanceId.current.slice(0, 4), 36) || 1
+          const isBlue = idVal % 2 === 0
 
-          if (otherWindow) {
-            const myCenterX = window.screenX + window.innerWidth / 2
-            const myCenterY = window.screenY + window.innerHeight / 2
-            const otherCenterX = otherWindow.x + otherWindow.width / 2
-            const otherCenterY = otherWindow.y + otherWindow.height / 2
+          // make blue semicircles smaller per request
+          if (isBlue) r = r * 0.6
 
-            const dx = otherCenterX - myCenterX
-            const dy = otherCenterY - myCenterY
-            angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI
-          }
-
-          // semicircle path oriented to the right (base), rotated by angleDeg around center
+          // semicircle path oriented to the right (base), rotated via CSS for smoothness
           const semiPath = `M ${cx} ${cy - r} A ${r} ${r} 0 0 1 ${cx} ${cy + r} L ${cx} ${cy} Z`
 
-          // color choice (could vary by instance)
-          const fillColor = otherWindow ? "#3b82f6" : "#94a3b8"
+          const fillColor = isBlue ? "#3b82f6" : "#10b981"
+
+          // use CSS transform for smooth transitions (transformOrigin in px)
+          const style: any = {
+            transform: `rotate(${angle}deg)`,
+            transformOrigin: `${cx}px ${cy}px`,
+            transition: "transform 180ms cubic-bezier(.2,.8,.2,1)",
+          }
 
           return (
-            <g transform={`rotate(${angleDeg} ${cx} ${cy})`}>
+            <g transformBox="fill-box" style={style}>
               <path d={semiPath} fill={fillColor} filter="url(#soft)" />
             </g>
           )
