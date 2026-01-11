@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Device Blend Demo</title>
+  <style>
+    body {
+      margin: 0;
+      background: black;
+      color: white;
+      font-family: monospace;
+    }
+    canvas {
+      display: block;
+    }
+    textarea {
+      width: 100%;
+      height: 80px;
+    }
+    button {
+      margin: 4px;
+    }
+  </style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<div>
+  <button id="create">Create</button>
+  <button id="join">Join</button>
+</div>
+
+<textarea id="signal" placeholder="Paste offer/answer here"></textarea>
+
+<script>
+/* ------------------ CANVAS ------------------ */
+const canvas = document.getElementById("c")
+const ctx = canvas.getContext("2d")
+
+function resize() {
+  canvas.width = innerWidth
+  canvas.height = innerHeight
+}
+resize()
+addEventListener("resize", resize)
+
+/* ------------------ LINE STATE ------------------ */
+let localY = 0.5
+let remoteY = 0.5
+let blend = 0
+
+/* ------------------ DRAW ------------------ */
+function draw() {
+  ctx.clearRect(0,0,canvas.width,canvas.height)
+
+  ctx.strokeStyle = "white"
+  ctx.lineWidth = 6
+  ctx.beginPath()
+
+  const x1 = 0
+  const y1 = localY * canvas.height
+  const x2 = canvas.width
+  const y2 = remoteY * canvas.height
+
+  const cx = canvas.width * 0.5
+  const cy = y1 + (y2 - y1) * blend
+
+  ctx.moveTo(x1, y1)
+  ctx.quadraticCurveTo(cx, cy, x2, y2)
+  ctx.stroke()
+
+  requestAnimationFrame(draw)
+}
+draw()
+
+/* ------------------ INTERACTION ------------------ */
+canvas.addEventListener("mousemove", e => {
+  localY = e.clientY / canvas.height
+  send()
+})
+
+/* ------------------ WEBRTC ------------------ */
+let pc, dc
+
+function setup(isCreator) {
+  pc = new RTCPeerConnection()
+  pc.onicecandidate = e => {
+    if (e.candidate) {
+      signal.value = JSON.stringify(pc.localDescription)
+    }
+  }
+
+  if (isCreator) {
+    dc = pc.createDataChannel("sync")
+    bindDC()
+  } else {
+    pc.ondatachannel = e => {
+      dc = e.channel
+      bindDC()
+    }
+  }
+}
+
+function bindDC() {
+  dc.onopen = () => console.log("connected")
+  dc.onmessage = e => {
+    const data = JSON.parse(e.data)
+    remoteY = data.y
+    blend = Math.min(1, blend + 0.05)
+  }
+}
+
+function send() {
+  if (dc?.readyState === "open") {
+    dc.send(JSON.stringify({ y: localY }))
+  }
+}
+
+/* ------------------ SIGNALING ------------------ */
+const signal = document.getElementById("signal")
+
+document.getElementById("create").onclick = async () => {
+  setup(true)
+  const offer = await pc.createOffer()
+  await pc.setLocalDescription(offer)
+  signal.value = JSON.stringify(offer)
+}
+
+document.getElementById("join").onclick = async () => {
+  setup(false)
+  const offer = JSON.parse(signal.value)
+  await pc.setRemoteDescription(offer)
+  const answer = await pc.createAnswer()
+  await pc.setLocalDescription(answer)
+  signal.value = JSON.stringify(answer)
+}
+
+/* ------------------ ACCEPT ANSWER ------------------ */
+signal.addEventListener("change", async () => {
+  const desc = JSON.parse(signal.value)
+  if (desc.type === "answer") {
+    await pc.setRemoteDescription(desc)
+  }
+})
+</script>
+
+</body>
+</html>
