@@ -72,8 +72,8 @@ export default function Home() {
     }
   }, [])
 
-  const getSvgPath = () => {
-    if (!otherWindow) return ""
+  const getRibbonPaths = () => {
+    if (!otherWindow) return { ribbon: "", center: "", midX: 0, midY: 0 }
 
     const myScreenX = window.screenX
     const myScreenY = window.screenY
@@ -85,62 +85,111 @@ export default function Home() {
     const otherWidth = otherWindow.width
     const otherHeight = otherWindow.height
 
-    // Calculate in screen space first
-    const myRightEdge = myScreenX + myWidth
-    const otherLeftEdge = otherScreenX
     const myMidY = myScreenY + myHeight / 2
     const otherMidY = otherScreenY + otherHeight / 2
 
-    // Convert screen coordinates to viewport coordinates (relative to current window)
-    // Viewport X: 0 to innerWidth
-    // For other window, we subtract current window's screenX to get its position relative to this window's viewport
     const startX = myWidth
     const startY = myMidY - myScreenY
 
-    const endX = otherLeftEdge - myScreenX
+    const endX = otherScreenX - myScreenX
     const endY = otherMidY - myScreenY
 
-    // Quadratic bezier curve that bends smoothly between windows
-    const controlX = (startX + endX) / 2
-    const controlY = (startY + endY) / 2
+    const dx = endX - startX
+    const dy = endY - startY
+    const dist = Math.hypot(dx, dy) || 1
 
-    return `M ${startX} ${startY} Q ${controlX} ${controlY} ${endX} ${endY}`
+    // Perpendicular (unit) vector for ribbon thickness
+    const nx = -dy / dist
+    const ny = dx / dist
+
+    // Thickness and bulge scale with distance, clamped for sane values
+    const thickness = Math.min(80, Math.max(10, dist * 0.06))
+    const bulge = Math.min(160, Math.max(20, dist * 0.12))
+
+    const cx = (startX + endX) / 2
+    const cy = (startY + endY) / 2
+    const controlX = cx + nx * bulge
+    const controlY = cy + ny * bulge
+
+    // Four ribbon corner points (offset along perpendicular)
+    const p1x = startX + nx * thickness
+    const p1y = startY + ny * thickness
+    const p2x = endX + nx * thickness
+    const p2y = endY + ny * thickness
+    const p3x = endX - nx * thickness
+    const p3y = endY - ny * thickness
+    const p4x = startX - nx * thickness
+    const p4y = startY - ny * thickness
+
+    const controlTopX = controlX + nx * thickness
+    const controlTopY = controlY + ny * thickness
+    const controlBottomX = controlX - nx * thickness
+    const controlBottomY = controlY - ny * thickness
+
+    // Closed smooth ribbon path (top curve -> straight to bottom curve -> back)
+    const ribbon = `M ${p1x} ${p1y} Q ${controlTopX} ${controlTopY} ${p2x} ${p2y} L ${p3x} ${p3y} Q ${controlBottomX} ${controlBottomY} ${p4x} ${p4y} Z`
+
+    // Center curve for stroke + glow
+    const center = `M ${startX} ${startY} Q ${controlX} ${controlY} ${endX} ${endY}`
+
+    return { ribbon, center, midX: cx, midY: cy, startX, startY, endX, endY, thickness }
   }
 
   return (
     <main className="fixed inset-0 bg-slate-50 overflow-hidden">
-      {/* Full-screen SVG for the connecting line */}
+      {/* Single semicircle oriented toward the other window */}
       <svg
         width={svgDims.width}
         height={svgDims.height}
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          position: "fixed",
-          top: 0,
-          left: 0,
-        }}
+        className="absolute inset-0"
+        style={{ position: "fixed", top: 0, left: 0 }}
       >
-        {otherWindow && (
-          <>
-            {/* Main connecting line */}
-            <path d={getSvgPath()} stroke="#1f2937" strokeWidth="3" fill="none" strokeLinecap="round" />
-            {/* Glow effect */}
-            <path d={getSvgPath()} stroke="#3b82f6" strokeWidth="8" fill="none" strokeLinecap="round" opacity="0.2" />
-          </>
-        )}
-      </svg>
+        <defs>
+          <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="8" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
 
-      {/* Status text */}
-      <div className="fixed bottom-8 left-8 text-sm font-medium text-slate-600">
-        {otherWindow ? (
-          <span className="flex items-center gap-2">
-            <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
-            Connected - Line aligns as you drag
-          </span>
-        ) : (
-          <span className="text-slate-400">Open in another tab or window to see the line...</span>
-        )}
-      </div>
+        {(() => {
+          const w = svgDims.width || window.innerWidth
+          const h = svgDims.height || window.innerHeight
+          const cx = w / 2
+          const cy = h / 2
+
+          // radius large enough to cover the viewport when showing half
+          const r = Math.max(w, h) * 0.9
+
+          // default angle (pointing right)
+          let angleDeg = 0
+
+          if (otherWindow) {
+            const myCenterX = window.screenX + window.innerWidth / 2
+            const myCenterY = window.screenY + window.innerHeight / 2
+            const otherCenterX = otherWindow.x + otherWindow.width / 2
+            const otherCenterY = otherWindow.y + otherWindow.height / 2
+
+            const dx = otherCenterX - myCenterX
+            const dy = otherCenterY - myCenterY
+            angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI
+          }
+
+          // semicircle path oriented to the right (base), rotated by angleDeg around center
+          const semiPath = `M ${cx} ${cy - r} A ${r} ${r} 0 0 1 ${cx} ${cy + r} L ${cx} ${cy} Z`
+
+          // color choice (could vary by instance)
+          const fillColor = otherWindow ? "#3b82f6" : "#94a3b8"
+
+          return (
+            <g transform={`rotate(${angleDeg} ${cx} ${cy})`}>
+              <path d={semiPath} fill={fillColor} filter="url(#soft)" />
+            </g>
+          )
+        })()}
+      </svg>
     </main>
   )
 }
