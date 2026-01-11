@@ -210,10 +210,11 @@ export default function Home() {
             transform: `rotate(${angle}deg)`,
             transformOrigin: `${cx}px ${cy}px`,
             transition: "transform 180ms cubic-bezier(.2,.8,.2,1)",
+            transformBox: "fill-box",
           }
 
           return (
-            <g transformBox="fill-box" style={style}>
+            <g style={style}>
               <path d={semiPath} fill={fillColor} filter="url(#soft)" />
             </g>
           )
