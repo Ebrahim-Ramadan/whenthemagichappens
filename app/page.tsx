@@ -1,6 +1,7 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, useMemo } from "react"
+import ControlPanel from "@/components/control-panel"
 
 interface WindowPosition {
   id: string
@@ -10,12 +11,51 @@ interface WindowPosition {
   height: number
 }
 
+interface Particle {
+  id: number
+  angle: number // polar angle
+  dist: number // polar distance (0-1 normalized)
+  size: number
+  baseOpacity: number
+  speed: number
+  offset: number
+}
+
 export default function Home() {
   const [otherWindow, setOtherWindow] = useState<WindowPosition | null>(null)
   const [svgDims, setSvgDims] = useState({ width: 0, height: 0 })
   const instanceId = useRef(Math.random().toString(36).substr(2, 9))
   const channelRef = useRef<BroadcastChannel | null>(null)
   const [angle, setAngle] = useState(0)
+  const [distance, setDistance] = useState(0)
+  const [connected, setConnected] = useState(false)
+
+  // Generate particles only once
+  const particles = useMemo(() => {
+    const p: Particle[] = []
+    const count = 80 // Number of dots for the shape
+    
+    for (let i = 0; i < count; i++) {
+      // Distribution: Semi-circle (-PI/2 to PI/2)
+      // We bias towards the edge for definition, but fill the center for volume
+      const isEdge = Math.random() > 0.6
+      const rBase = isEdge ? 0.9 + Math.random() * 0.1 : Math.random() * 0.9
+      
+      // Angle: -PI/2 to PI/2 (right side)
+      const theta = (Math.random() * Math.PI) - (Math.PI / 2)
+      
+      p.push({
+        id: i,
+        angle: theta,
+        dist: rBase,
+        size: Math.random() * 3 + 1, // 1px to 4px
+        baseOpacity: Math.random() * 0.5 + 0.3,
+        speed: Math.random() * 2 + 1, // animation duration multiplier
+        offset: Math.random() * 1000 // animation delay
+      })
+    }
+    return p
+  }, [])
 
   // Initialize BroadcastChannel for cross-tab communication
   useEffect(() => {
@@ -26,6 +66,7 @@ export default function Home() {
         const data = event.data as WindowPosition
         if (data.id !== instanceId.current) {
           setOtherWindow(data)
+          setConnected(true)
         }
       }
 
@@ -41,25 +82,53 @@ export default function Home() {
     }
   }, [])
 
-  // Broadcast window position frequently for smooth updates
+  // Broadcast window position loop - High Frequency
   useEffect(() => {
+    let rafId = 0
+    let lastX = 0
+    let lastY = 0
+    let lastW = 0
+    let lastH = 0
+
     const broadcastPosition = () => {
-      if (channelRef.current) {
+      // Check if position changed to avoid flooding, but check aggressively
+      const currentX = window.screenX
+      const currentY = window.screenY
+      const currentW = window.innerWidth
+      const currentH = window.innerHeight
+
+      // Only broadcast if changed
+      if (
+        channelRef.current &&
+        (currentX !== lastX || currentY !== lastY || currentW !== lastW || currentH !== lastH)
+      ) {
+        lastX = currentX
+        lastY = currentY
+        lastW = currentW
+        lastH = currentH
+
         const message: WindowPosition = {
           id: instanceId.current,
-          x: window.screenX,
-          y: window.screenY,
-          width: window.innerWidth,
-          height: window.innerHeight,
+          x: currentX,
+          y: currentY,
+          width: currentW,
+          height: currentH,
         }
         channelRef.current.postMessage(message)
+        
+        // Also update local SVG dims immediately if size changed
+        if (currentW !== lastW || currentH !== lastH) {
+             setSvgDims({ width: currentW, height: currentH })
+        }
       }
+
+      rafId = requestAnimationFrame(broadcastPosition)
     }
 
-    // Update SVG dimensions
+    // Initial SVG dimensions
     setSvgDims({ width: window.innerWidth, height: window.innerHeight })
-
-    const interval = setInterval(broadcastPosition, 50)
+    
+    // Start loop
     broadcastPosition()
 
     const handleResize = () => {
@@ -68,7 +137,7 @@ export default function Home() {
 
     window.addEventListener("resize", handleResize)
     return () => {
-      clearInterval(interval)
+      cancelAnimationFrame(rafId)
       window.removeEventListener("resize", handleResize)
     }
   }, [])
@@ -77,21 +146,39 @@ export default function Home() {
   useEffect(() => {
     let raf = 0
     const animate = () => {
-      let target = 0
+      let target = angle
+      let dist = 0
+
       if (otherWindow) {
         const myCenterX = window.screenX + window.innerWidth / 2
         const myCenterY = window.screenY + window.innerHeight / 2
         const otherCenterX = otherWindow.x + otherWindow.width / 2
         const otherCenterY = otherWindow.y + otherWindow.height / 2
-        target = (Math.atan2(otherCenterY - myCenterY, otherCenterX - myCenterX) * 180) / Math.PI
+
+        const dx = otherCenterX - myCenterX
+        const dy = otherCenterY - myCenterY
+
+        // Angle pointing towards the other window
+        target = (Math.atan2(dy, dx) * 180) / Math.PI
+        dist = Math.hypot(dx, dy)
+      } else {
+        // If no connection, rotate slowly to show it's "scanning"
+        target = (Date.now() / 20) % 360
       }
+
+      setDistance(dist)
 
       // simple easing towards target angle
       setAngle((prev) => {
         const d = target - prev
         // wrap shortest
         const delta = ((d + 180) % 360) - 180
-        return prev + delta * 0.18
+        
+        // MUCH faster response (0.5 instead of 0.2)
+        // If delta is huge (jump), snap to it
+        if (Math.abs(delta) > 100) return target
+        
+        return prev + delta * 0.5
       })
 
       raf = requestAnimationFrame(animate)
@@ -101,83 +188,48 @@ export default function Home() {
     return () => cancelAnimationFrame(raf)
   }, [otherWindow])
 
-  const getRibbonPaths = () => {
-    if (!otherWindow) return { ribbon: "", center: "", midX: 0, midY: 0 }
+  const alignment = (() => {
+    const normAngle = ((angle % 360) + 360) % 360
+    return {
+      right: connected && (normAngle > 315 || normAngle <= 45),
+      bottom: connected && (normAngle > 45 && normAngle <= 135),
+      left: connected && (normAngle > 135 && normAngle <= 225),
+      top: connected && (normAngle > 225 && normAngle <= 315),
+    }
+  })()
 
-    const myScreenX = window.screenX
-    const myScreenY = window.screenY
-    const myWidth = window.innerWidth
-    const myHeight = window.innerHeight
-
-    const otherScreenX = otherWindow.x
-    const otherScreenY = otherWindow.y
-    const otherWidth = otherWindow.width
-    const otherHeight = otherWindow.height
-
-    const myMidY = myScreenY + myHeight / 2
-    const otherMidY = otherScreenY + otherHeight / 2
-
-    const startX = myWidth
-    const startY = myMidY - myScreenY
-
-    const endX = otherScreenX - myScreenX
-    const endY = otherMidY - myScreenY
-
-    const dx = endX - startX
-    const dy = endY - startY
-    const dist = Math.hypot(dx, dy) || 1
-
-    // Perpendicular (unit) vector for ribbon thickness
-    const nx = -dy / dist
-    const ny = dx / dist
-
-    // Thickness and bulge scale with distance, clamped for sane values
-    const thickness = Math.min(80, Math.max(10, dist * 0.06))
-    const bulge = Math.min(160, Math.max(20, dist * 0.12))
-
-    const cx = (startX + endX) / 2
-    const cy = (startY + endY) / 2
-    const controlX = cx + nx * bulge
-    const controlY = cy + ny * bulge
-
-    // Four ribbon corner points (offset along perpendicular)
-    const p1x = startX + nx * thickness
-    const p1y = startY + ny * thickness
-    const p2x = endX + nx * thickness
-    const p2y = endY + ny * thickness
-    const p3x = endX - nx * thickness
-    const p3y = endY - ny * thickness
-    const p4x = startX - nx * thickness
-    const p4y = startY - ny * thickness
-
-    const controlTopX = controlX + nx * thickness
-    const controlTopY = controlY + ny * thickness
-    const controlBottomX = controlX - nx * thickness
-    const controlBottomY = controlY - ny * thickness
-
-    // Closed smooth ribbon path (top curve -> straight to bottom curve -> back)
-    const ribbon = `M ${p1x} ${p1y} Q ${controlTopX} ${controlTopY} ${p2x} ${p2y} L ${p3x} ${p3y} Q ${controlBottomX} ${controlBottomY} ${p4x} ${p4y} Z`
-
-    // Center curve for stroke + glow
-    const center = `M ${startX} ${startY} Q ${controlX} ${controlY} ${endX} ${endY}`
-
-    return { ribbon, center, midX: cx, midY: cy, startX, startY, endX, endY, thickness }
-  }
+  // Dynamic colors based on ID
+  const idVal = parseInt(instanceId.current.slice(0, 4), 36) || 1
+  const isBlue = idVal % 2 === 0
+  const primaryColor = isBlue ? "#3b82f6" : "#10b981" // blue-500 : emerald-500
+  const secondaryColor = isBlue ? "#60a5fa" : "#34d399" // blue-400 : emerald-400
 
   return (
-    <main className="fixed inset-0 bg-slate-50 overflow-hidden">
-      {/* Single semicircle oriented toward the other window */}
+    <main className="fixed inset-0 bg-slate-900 overflow-hidden text-slate-100">
+      <style jsx>{`
+        @keyframes float {
+          0%, 100% { transform: translate(0, 0); opacity: 0.8; }
+          50% { transform: translate(var(--tx), var(--ty)); opacity: 0.4; }
+        }
+        @keyframes flow {
+          0% { transform: translateX(0); opacity: 0; }
+          10% { opacity: 1; }
+          90% { opacity: 1; }
+          100% { transform: translateX(var(--dist)); opacity: 0; }
+        }
+      `}</style>
+      
       <svg
         width={svgDims.width}
         height={svgDims.height}
-        className="absolute inset-0"
+        className="absolute inset-0 pointer-events-none"
         style={{ position: "fixed", top: 0, left: 0 }}
       >
         <defs>
-          <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
-            <feGaussianBlur stdDeviation="8" result="blur" />
+          <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="3" result="coloredBlur" />
             <feMerge>
-              <feMergeNode in="blur" />
+              <feMergeNode in="coloredBlur" />
               <feMergeNode in="SourceGraphic" />
             </feMerge>
           </filter>
@@ -189,37 +241,100 @@ export default function Home() {
           const cx = w / 2
           const cy = h / 2
 
-          // base radius (smaller than before)
-          const base = Math.max(10, Math.min(w, h))
-          let r = base * 0.9
-
-          // decide color per-instance so some windows are blue, some green
-          const idVal = parseInt(instanceId.current.slice(0, 4), 36) || 1
-          const isBlue = idVal % 2 === 0
-
-          // make blue semicircles smaller per request
-          if (isBlue) r = r * 0.6
-
-          // semicircle path oriented to the right (base), rotated via CSS for smoothness
-          const semiPath = `M ${cx} ${cy - r} A ${r} ${r} 0 0 1 ${cx} ${cy + r} L ${cx} ${cy} Z`
-
-          const fillColor = isBlue ? "#3b82f6" : "#10b981"
-
-          // use CSS transform for smooth transitions (transformOrigin in px)
-          const style: any = {
-            transform: `rotate(${angle}deg)`,
-            transformOrigin: `${cx}px ${cy}px`,
-            transition: "transform 180ms cubic-bezier(.2,.8,.2,1)",
-            transformBox: "fill-box",
-          }
+          // Size of the core shape
+          const r = Math.min(w, h) * 0.25
 
           return (
-            <g style={style}>
-              <path d={semiPath} fill={fillColor} filter="url(#soft)" />
+            <g transform={`translate(${cx}, ${cy}) rotate(${angle})`}>
+              {/* Beam made of flowing dots */}
+              {connected && (
+                <g filter="url(#glow)">
+                  {Array.from({ length: 20 }).map((_, i) => (
+                    <circle
+                      key={`beam-${i}`}
+                      r={Math.random() * 2 + 1}
+                      fill={secondaryColor}
+                      opacity={0.6}
+                    >
+                      <animate
+                        attributeName="cx"
+                        from="0"
+                        to={distance / 2}
+                        dur={`${1000 + Math.random() * 1000}ms`}
+                        repeatCount="indefinite"
+                        begin={`${Math.random() * -2000}ms`}
+                      />
+                      <animate
+                        attributeName="cy"
+                        values="-2;2;-2"
+                        dur={`${500 + Math.random() * 1000}ms`}
+                        repeatCount="indefinite"
+                      />
+                      <animate
+                        attributeName="opacity"
+                        values="0;0.8;0"
+                        dur={`${1000 + Math.random() * 1000}ms`}
+                        repeatCount="indefinite"
+                      />
+                    </circle>
+                  ))}
+                  {/* Core connector beam line (faint) */}
+                  <line 
+                    x1="0" y1="0" x2={distance / 2} y2="0" 
+                    stroke={primaryColor} 
+                    strokeWidth="1" 
+                    opacity="0.2" 
+                    strokeDasharray="4 4"
+                  />
+                </g>
+              )}
+
+              {/* The "Half" Shape - Particle System */}
+              <g filter="url(#glow)">
+                {particles.map((p) => {
+                  // Polar to Cartesian
+                  // x = r * dist * cos(theta)
+                  // y = r * dist * sin(theta)
+                  const px = r * p.dist * Math.cos(p.angle)
+                  const py = r * p.dist * Math.sin(p.angle)
+                  
+                  // Random float direction
+                  const tx = (Math.random() - 0.5) * 10 + "px"
+                  const ty = (Math.random() - 0.5) * 10 + "px"
+
+                  return (
+                    <circle
+                      key={p.id}
+                      cx={px}
+                      cy={py}
+                      r={p.size}
+                      fill={primaryColor}
+                      style={{
+                        opacity: p.baseOpacity,
+                        animation: `float ${3 * p.speed}s ease-in-out infinite alternate`,
+                        animationDelay: `${-p.offset}ms`,
+                        // pass css vars for animation
+                        // @ts-ignore
+                        "--tx": tx,
+                        // @ts-ignore
+                        "--ty": ty,
+                      }}
+                    />
+                  )
+                })}
+                
+                {/* Central concentrated energy */}
+                 <circle cx="0" cy="0" r={r * 0.1} fill={secondaryColor} filter="url(#glow)" opacity="0.5">
+                   <animate attributeName="r" values={`${r*0.08};${r*0.12};${r*0.08}`} dur="3s" repeatCount="indefinite" />
+                 </circle>
+              </g>
+
             </g>
           )
         })()}
       </svg>
+
+      {/* <ControlPanel alignment={alignment} instanceId={instanceId.current} hasConnection={connected} /> */}
     </main>
   )
 }
