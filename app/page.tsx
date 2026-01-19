@@ -1,7 +1,6 @@
 "use client"
 
 import { useEffect, useRef, useState, useMemo } from "react"
-import ControlPanel from "@/components/control-panel"
 
 interface WindowPosition {
   id: string
@@ -77,7 +76,7 @@ export default function Home() {
           channelRef.current.close()
         }
       }
-    } catch (e) {
+    } catch {
       console.log("BroadcastChannel not available")
     }
   }, [])
@@ -98,14 +97,8 @@ export default function Home() {
       const currentH = window.innerHeight
 
       // Only broadcast if changed
-      if (
-        channelRef.current &&
-        (currentX !== lastX || currentY !== lastY || currentW !== lastW || currentH !== lastH)
-      ) {
-        lastX = currentX
-        lastY = currentY
-        lastW = currentW
-        lastH = currentH
+      const sizeChanged = currentW !== lastW || currentH !== lastH
+      if (channelRef.current && (currentX !== lastX || currentY !== lastY || sizeChanged)) {
 
         const message: WindowPosition = {
           id: instanceId.current,
@@ -115,11 +108,16 @@ export default function Home() {
           height: currentH,
         }
         channelRef.current.postMessage(message)
-        
+
         // Also update local SVG dims immediately if size changed
-        if (currentW !== lastW || currentH !== lastH) {
-             setSvgDims({ width: currentW, height: currentH })
+        if (sizeChanged) {
+          setSvgDims({ width: currentW, height: currentH })
         }
+
+        lastX = currentX
+        lastY = currentY
+        lastW = currentW
+        lastH = currentH
       }
 
       rafId = requestAnimationFrame(broadcastPosition)
@@ -146,7 +144,7 @@ export default function Home() {
   useEffect(() => {
     let raf = 0
     const animate = () => {
-      let target = angle
+      let target = 0
       let dist = 0
 
       if (otherWindow) {
@@ -188,16 +186,6 @@ export default function Home() {
     return () => cancelAnimationFrame(raf)
   }, [otherWindow])
 
-  const alignment = (() => {
-    const normAngle = ((angle % 360) + 360) % 360
-    return {
-      right: connected && (normAngle > 315 || normAngle <= 45),
-      bottom: connected && (normAngle > 45 && normAngle <= 135),
-      left: connected && (normAngle > 135 && normAngle <= 225),
-      top: connected && (normAngle > 225 && normAngle <= 315),
-    }
-  })()
-
   // Dynamic colors based on ID
   const idVal = parseInt(instanceId.current.slice(0, 4), 36) || 1
   const isBlue = idVal % 2 === 0
@@ -236,10 +224,11 @@ export default function Home() {
         </defs>
 
         {(() => {
-          const w = svgDims.width || window.innerWidth
-          const h = svgDims.height || window.innerHeight
+          const w = svgDims.width
+          const h = svgDims.height
           const cx = w / 2
           const cy = h / 2
+          if (!w || !h) return null
 
           // Size of the core shape
           const r = Math.min(w, h) * 0.25
@@ -309,16 +298,15 @@ export default function Home() {
                       cy={py}
                       r={p.size}
                       fill={primaryColor}
-                      style={{
-                        opacity: p.baseOpacity,
-                        animation: `float ${3 * p.speed}s ease-in-out infinite alternate`,
-                        animationDelay: `${-p.offset}ms`,
-                        // pass css vars for animation
-                        // @ts-ignore
-                        "--tx": tx,
-                        // @ts-ignore
-                        "--ty": ty,
-                      }}
+                      style={
+                        {
+                          opacity: p.baseOpacity,
+                          animation: `float ${3 * p.speed}s ease-in-out infinite alternate`,
+                          animationDelay: `${-p.offset}ms`,
+                          ["--tx"]: tx,
+                          ["--ty"]: ty,
+                        } as React.CSSProperties & Record<string, string | number>
+                      }
                     />
                   )
                 })}
@@ -334,7 +322,7 @@ export default function Home() {
         })()}
       </svg>
 
-      {/* <ControlPanel alignment={alignment} instanceId={instanceId.current} hasConnection={connected} /> */}
+      {/* ControlPanel intentionally omitted during SSR to avoid window access */}
     </main>
   )
 }
